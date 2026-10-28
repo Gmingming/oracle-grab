@@ -77,7 +77,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: grab-log
-          path: ~/oracle-grab/grab.log
+          path: $HOME/oracle-grab/grab.log
           retention-days: 3
 
       - name: 抢到后开 issue 通知
