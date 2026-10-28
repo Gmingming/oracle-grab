@@ -1,0 +1,48 @@
+name: probe
+
+# 只读诊断：验证仓库里的 OCI 凭据/子网/镜像是否可用，不会创建任何实例
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装 OCI SDK
+        run: pip install -q oci
+      - name: 写入 OCI 凭据
+        env:
+          OCI_KEY: ${{ secrets.OCI_API_KEY }}
+          OCI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_FP: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          mkdir -p "$HOME/.oci"
+          printf '%s\n' "$OCI_KEY" > "$HOME/.oci/oci_api_key.pem"
+          chmod 600 "$HOME/.oci/oci_api_key.pem"
+          {
+            echo "[DEFAULT]"
+            echo "user=$OCI_USER"
+            echo "fingerprint=$OCI_FP"
+            echo "tenancy=$OCI_TENANCY"
+            echo "region=$OCI_REGION"
+            echo "key_file=$HOME/.oci/oci_api_key.pem"
+          } > "$HOME/.oci/config"
+      - name: 预检（只读）
+        env:
+          OCI_SUBNET: ${{ secrets.OCI_SUBNET_ID }}
+          OCI_AD: ${{ secrets.OCI_AD }}
+        run: |
+          ARGS=""
+          if [ -n "$OCI_SUBNET" ]; then ARGS="$ARGS --subnet $OCI_SUBNET"; fi
+          if [ -n "$OCI_AD" ]; then ARGS="$ARGS --ad $OCI_AD"; fi
+          python -u grab.py check $ARGS
