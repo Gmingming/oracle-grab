@@ -1,0 +1,92 @@
+name: oracle-grab
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */5 * * *"   # 每 5 小时拉起一轮（单轮最多跑 5 小时 42 分）
+
+permissions:
+  contents: read
+  issues: write
+
+# 同一时间只跑一个抢机任务，绝不并发（避免一次开两台）
+concurrency:
+  group: oracle-grab
+  cancel-in-progress: false
+
+jobs:
+  grab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装 OCI SDK
+        run: pip install -q oci
+
+      - name: 写入 OCI 凭据
+        env:
+          OCI_KEY: ${{ secrets.OCI_API_KEY }}
+          OCI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_FP: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          mkdir -p "$HOME/.oci"
+          printf '%s\n' "$OCI_KEY" > "$HOME/.oci/oci_api_key.pem"
+          chmod 600 "$HOME/.oci/oci_api_key.pem"
+          {
+            echo "[DEFAULT]"
+            echo "user=$OCI_USER"
+            echo "fingerprint=$OCI_FP"
+            echo "tenancy=$OCI_TENANCY"
+            echo "region=$OCI_REGION"
+            echo "key_file=$HOME/.oci/oci_api_key.pem"
+          } > "$HOME/.oci/config"
+          chmod 600 "$HOME/.oci/config"
+
+      - name: 写入 SSH 公钥
+        env:
+          PUB: ${{ secrets.OCI_SSH_PUBKEY }}
+        run: |
+          mkdir -p "$HOME/oracle-grab"
+          printf '%s\n' "$PUB" > "$HOME/oracle-grab/authorized.pub"
+
+      - name: 抢机
+        id: grab
+        env:
+          OCI_SUBNET: ${{ secrets.OCI_SUBNET_ID }}
+          OCI_AD: ${{ secrets.OCI_AD }}
+        run: |
+          ARGS="--name oracle-free-arm --ocpus 2 --gbs 12 --interval 60 --hours 5.7 --no-notify --ssh-pubkey $HOME/oracle-grab/authorized.pub"
+          if [ -n "$OCI_SUBNET" ]; then ARGS="$ARGS --subnet $OCI_SUBNET"; fi
+          if [ -n "$OCI_AD" ]; then ARGS="$ARGS --ad $OCI_AD"; fi
+          set +e
+          python -u grab.py grab $ARGS
+          code=$?
+          set -e
+          if [ "$code" -eq 2 ]; then echo "本轮窗口内没抢到，属正常结束"; exit 0; fi
+          exit "$code"
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grab-log
+          path: ~/oracle-grab/grab.log
+          retention-days: 3
+
+      - name: 抢到后开 issue 通知
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f "$HOME/oracle-grab/result.txt" ]; then
+            gh issue create \
+              --title "✅ 抢到甲骨文 ARM 实例 $(date '+%Y-%m-%d %H:%M')" \
+              --body "$(cat "$HOME/oracle-grab/result.txt")" || true
+          fi
