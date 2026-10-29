@@ -100,6 +100,17 @@ def clients(cfg):
     )
 
 
+def parse_specs(text):
+    """'2x12,1x6' -> [(2.0, 12.0), (1.0, 6.0)]，为空返回 []"""
+    out = []
+    for part in (text or "").replace(" ", "").split(","):
+        if not part:
+            continue
+        o, g = part.lower().split("x")
+        out.append((float(o), float(g)))
+    return out
+
+
 def retry_call(fn, attempts=8, delay=6.0, what=""):
     """OCI 边缘节点偶发 401（新密钥同步/多 POP 不一致），这里统一重试"""
     last = None
@@ -281,19 +292,28 @@ def cmd_grab(args):
         details.shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
             ocpus=float(args.ocpus), memory_in_gbs=float(args.gbs))
 
+    specs = parse_specs(args.specs) if args.shape == SF else []
+    if not specs:
+        specs = [(float(args.ocpus), float(args.gbs))]
     log.info("目标：%s  %s  %s  %s  AD=%s", args.name, args.shape, sub.display_name, cfg["region"], ad)
+    log.info("规格轮换：%s（每次尝试按顺序取一个）", " -> ".join("%.0fC/%.0fG" % x for x in specs))
     log.info("开始抢机，间隔 %.0f 秒（Ctrl-C 可停）", args.interval)
 
     deadline = time.time() + args.hours * 3600
     attempt = 0
     while True:
         attempt += 1
+        cur = specs[(attempt - 1) % len(specs)]
+        if args.shape == SF:
+            details.shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
+                ocpus=cur[0], memory_in_gbs=cur[1])
+        label = "%.0fC/%.0fG" % cur
         try:
             resp = compute.launch_instance(details)
         except oci.exceptions.ServiceError as e:
             if is_capacity_error(e):
                 tag = "鉴权同步中" if e.status == 401 else "没抢到"
-                log.info("#%d %s：%s %s —— %.0f 秒后再试", attempt, tag, e.status,
+                log.info("#%d [%s] %s：%s %s —— %.0f 秒后再试", attempt, label, tag, e.status,
                          (e.message or e.code or "").strip()[:120], args.interval)
                 if time.time() > deadline:
                     notify("抢机失败", "超过时限仍未抢到容量")
@@ -347,13 +367,14 @@ def cmd_grab(args):
         log.warning("取公网 IP 失败：%s", e)
 
     log.info("=" * 60)
-    log.info("抢到了！实例：%s  状态：%s  公网 IP：%s", inst.display_name, inst.lifecycle_state, ip)
+    log.info("抢到了！实例：%s  规格：%s  状态：%s  公网 IP：%s",
+             inst.display_name, label, inst.lifecycle_state, ip)
     log.info("登录：ssh -i %s ubuntu@%s", os.path.join(WORKDIR, "id_ed25519"), ip)
     log.info("=" * 60)
     try:
         with open(os.path.join(WORKDIR, "result.txt"), "w", encoding="utf-8") as f:
             f.write(f"实例：{inst.display_name}  状态：{inst.lifecycle_state}\n")
-            f.write(f"规格：{args.shape} {args.ocpus}C / {args.gbs}G\n")
+            f.write(f"规格：{args.shape} {cur[0]:.0f}C / {cur[1]:.0f}G\n")
             f.write(f"区域：{cfg['region']}  可用域：{ad}\n")
             f.write(f"公网 IP：{ip}\n\n")
             f.write(f"ssh -i ~/oracle-grab/id_ed25519 ubuntu@{ip}\n")
@@ -366,7 +387,7 @@ def cmd_grab(args):
         try:
             with open(summary, "a", encoding="utf-8") as f:
                 f.write(f"## 抢到了 ✅\n\n- 实例：`{inst.display_name}` ({inst.lifecycle_state})\n"
-                        f"- 规格：{args.shape} {args.ocpus}C/{args.gbs}G\n- 区域：{cfg['region']}\n"
+                        f"- 规格：{args.shape} {cur[0]:.0f}C/{cur[1]:.0f}G\n- 区域：{cfg['region']}\n"
                         f"- 公网 IP：`{ip}`\n- SSH：`ssh -i <你的私钥> ubuntu@{ip}`\n")
         except Exception:
             pass
@@ -400,6 +421,8 @@ def main():
     g.add_argument("--once", action="store_true", help="只尝试一次")
     g.add_argument("--allow-multiple", action="store_true", help="已有一台时仍继续再开")
     g.add_argument("--no-notify", action="store_true", help="不出 macOS 通知/语音（CI 用）")
+    g.add_argument("--specs", default="",
+                   help='轮换规格，如 "2x12,1x6"：第 1 次申请 2C12G，第 2 次 1C6G，如此交替')
 
     args = p.parse_args()
     global NO_NOTIFY
