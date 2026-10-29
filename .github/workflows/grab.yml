@@ -62,7 +62,7 @@ jobs:
           OCI_SUBNET: ${{ secrets.OCI_SUBNET_ID }}
           OCI_AD: ${{ secrets.OCI_AD }}
         run: |
-          ARGS="--name oracle-free-arm --ocpus 2 --gbs 12 --interval 60 --hours 5.7 --no-notify --ssh-pubkey $HOME/oracle-grab/authorized.pub"
+          ARGS="--name oracle-free-arm --specs 2x12,1x6 --interval 60 --hours 5.7 --no-notify --ssh-pubkey $HOME/oracle-grab/authorized.pub"
           if [ -n "$OCI_SUBNET" ]; then ARGS="$ARGS --subnet $OCI_SUBNET"; fi
           if [ -n "$OCI_AD" ]; then ARGS="$ARGS --ad $OCI_AD"; fi
           set +e
