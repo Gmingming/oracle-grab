@@ -3,7 +3,7 @@ name: oracle-grab
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */4 * * *"   # 每 4 小时拉起一轮；单轮跑 5h42m，靠排队保证无缝衔接
+    - cron: "0 * * * *"   # 每小时拉起一轮；单轮跑 5h42m，靠排队把空档压到几分钟
 
 permissions:
   contents: read
